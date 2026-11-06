@@ -325,3 +325,14 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 32px 60px; }
   .view, .modal-card, .toast { animation: none !important; }
   * { transition-duration: .01ms !important; }
 }
+/* 总大小未知时（如 GitHub 源码包）用流动条纹表示"进度不确定" */
+.progress-bar.unknown {
+  width: 100% !important;
+  background: repeating-linear-gradient(90deg, #c9d3ea 0 10px, #e8ecf7 10px 20px);
+  background-size: 20px 100%;
+  animation: slideBar 1s linear infinite;
+}
+@keyframes slideBar {
+  from { background-position: 0 0; }
+  to { background-position: 20px 0; }
+}

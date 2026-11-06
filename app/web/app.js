@@ -257,11 +257,14 @@ function buildFileList() {
     });
   }
   // 源码压缩包：始终作为可选项，不支持断点续传
+  // 注意：codeload 直连很慢（实测 18KB/s，走镜像 3.5MB/s），所以这里也要套镜像
   const tag = app.modal.tag || "HEAD";
+  const rawZip = `https://codeload.github.com/${app.modal.repoId}/zip/${tag}`;
+  const mirror = (app.settings && app.settings.mirror || "").replace(/\/$/, "");
   files.push({
     name: `${app.modal.repoId.split("/")[1]}-${tag}.zip`,
     size: 0,
-    url: `https://codeload.github.com/${app.modal.repoId}/zip/${tag}`,
+    url: mirror ? `${mirror}/${rawZip}` : rawZip,
     resumable: false,
     kind: "source",
   });
@@ -380,11 +383,20 @@ function updateTaskNode(node, task) {
   refs.status.textContent = task.status_text || task.status;
 
   const percent = Math.max(0, Math.min(100, Number(task.percent) || 0));
-  refs.bar.style.width = percent + "%";
-  refs.bar.className = "progress-bar " + key;
+  const total = Number(task.bytes_total) || 0;
 
-  refs.left.innerHTML = `<b>${percent.toFixed(1)}%</b> · ${fmtBytes(task.bytes_done)} / ${fmtBytes(task.bytes_total)}`
-    + `${task.total_files ? ` · ${task.files_done || 0}/${task.total_files} 个文件` : ""}`;
+  if (!total) {
+    // 源码压缩包之类拿不到总大小：用流动条纹表示"进度未知"，而不是骗人的 0%
+    refs.bar.style.width = "100%";
+    refs.bar.className = "progress-bar unknown";
+    refs.left.innerHTML = `<b>已下载 ${fmtBytes(task.bytes_done)}</b> · 总大小未知`
+      + `${task.total_files ? ` · ${task.files_done || 0}/${task.total_files} 个文件` : ""}`;
+  } else {
+    refs.bar.style.width = percent + "%";
+    refs.bar.className = "progress-bar " + key;
+    refs.left.innerHTML = `<b>${percent.toFixed(1)}%</b> · ${fmtBytes(task.bytes_done)} / ${fmtBytes(task.bytes_total)}`
+      + `${task.total_files ? ` · ${task.files_done || 0}/${task.total_files} 个文件` : ""}`;
+  }
   const parts = [];
   if (task.speed > 0) parts.push(fmtSpeed(task.speed));
   if (task.eta > 0) parts.push(fmtEta(task.eta));
@@ -502,8 +514,11 @@ async function loadSettings() {
   app.settings = data.settings;
   const s = data.settings;
   $("#set-dir").value = s.download_dir;
-  $("#set-mirror").value = s.mirror || "";
+  $("#set-mirrors").value = (s.mirrors || []).join("\n");
+  $("#set-mirror-mode").value = s.mirror_mode || "auto";
   $("#set-proxy").value = s.proxy || "";
+  renderMirrorScores(null);
+  loadMirrorScores();
   $("#set-token").value = "";
   $("#set-parallel").value = s.max_parallel_models;
   $("#set-files").value = s.files_per_model;
@@ -527,7 +542,9 @@ function shortenPath(path) {
 async function saveSettings(clearToken = false) {
   const payload = {
     download_dir: $("#set-dir").value.trim(),
-    mirror: $("#set-mirror").value.trim(),
+    mirrors: $("#set-mirrors").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    mirror_mode: $("#set-mirror-mode").value,
+    mirror: ($("#set-mirrors").value.split("\n").map((x) => x.trim()).filter(Boolean)[0]) || "",
     proxy: $("#set-proxy").value.trim(),
     max_parallel_models: Number($("#set-parallel").value),
     files_per_model: Number($("#set-files").value),
@@ -689,6 +706,7 @@ function bindEvents() {
   $("#set-save").addEventListener("click", () => saveSettings(false));
   $("#set-token-clear").addEventListener("click", () => saveSettings(true));
   $("#set-test").addEventListener("click", testEndpoint);
+  $("#set-mirror-test").addEventListener("click", testMirrors);
   $("#btn-log").addEventListener("click", () => api("/api/open-log", { method: "POST" }));
   $("#btn-quit").addEventListener("click", async () => {
     if (!confirm("确定要退出程序吗？正在下载的任务会暂停，下次启动可以继续。")) return;
@@ -731,3 +749,37 @@ async function boot() {
 }
 
 boot();
+async function loadMirrorScores() {
+  const data = await api("/api/mirrors");
+  if (data.ok) renderMirrorScores(data);
+}
+
+async function testMirrors() {
+  const btn = $("#set-mirror-test");
+  btn.disabled = true;
+  btn.textContent = "测速中…";
+  const data = await api("/api/mirrors/test", { method: "POST" });
+  btn.disabled = false;
+  btn.textContent = "测速";
+  if (data.ok) {
+    renderMirrorScores(data);
+    toast("测速完成，正在用 " + (data.active || "直连"), "ok");
+  } else {
+    toast(data.error || "测速失败", "err");
+  }
+}
+
+function renderMirrorScores(report) {
+  const box = $("#mirror-scores");
+  if (!box) return;
+  if (!report || !report.scores || !report.scores.length) {
+    box.textContent = "";
+    return;
+  }
+  const rows = report.scores.map((item) => {
+    const speed = item.ok ? (item.speed / 1048576).toFixed(2) + " MB/s" : "不可用";
+    const active = item.mirror === report.active ? " ← 正在使用" : "";
+    return `${esc(item.mirror)}：${speed}${active}`;
+  });
+  box.innerHTML = rows.join("　·　");
+}

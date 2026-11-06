@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import re
 import subprocess
 import threading
 import time
@@ -39,6 +40,40 @@ def _proxy_args(proxy: str | None) -> list[str]:
         proxy = "http://" + proxy
     return ["-x", proxy]
 
+
+def head_length(url: str, proxy: str | None = None, timeout: int = 20,
+                headers: dict | None = None) -> int:
+    """只取响应头，拿 Content-Length。拿不到返回 0。
+
+    用途：GitHub 的源码压缩包在 Release 列表里没有大小，
+    下载前 HEAD 一次就能让进度条和剩余时间正常显示。
+    """
+    header_args = []
+    for key, value in (headers or {}).items():
+        header_args += ["-H", f"{key}: {value}"]
+    cmd = [
+        _CURL, "-sS", "-I", "-L",
+        *header_args,
+        "--connect-timeout", "10",
+        "--max-time", str(timeout),
+        *_proxy_args(proxy),
+        url,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW)
+    except Exception:
+        return 0
+    if proc.returncode != 0:
+        return 0
+    text = proc.stdout.decode("utf-8", "replace")
+    # 跟随过跳转时会有多段响应头，取最后一段的 Content-Length
+    lengths = re.findall(r"(?im)^content-length:\s*(\d+)\s*$", text)
+    if not lengths:
+        return 0
+    try:
+        return int(lengths[-1])
+    except ValueError:
+        return 0
 
 def get_json(url: str, params: dict | None = None, timeout: int = 45,
              proxy: str | None = None, headers: dict | None = None):
@@ -85,10 +120,13 @@ def download_to(url: str, part: Path, expect: int, proxy: str | None = None,
     其它失败抛异常。
     """
     part.parent.mkdir(parents=True, exist_ok=True)
+    before = part.stat().st_size if part.exists() else 0
     if not resume:
         # 服务端不支持 Range（例如 GitHub 源码压缩包），只能整份重下
         part.unlink(missing_ok=True)
-    before = part.stat().st_size if part.exists() else 0
+        if before and on_progress:
+            on_progress(-before)  # 告诉上层：这段进度没了，别让它虚高
+        before = 0
 
     cmd = [
         _CURL, "-sS", "-L", "--fail",
@@ -180,3 +218,33 @@ def ping(url: str, proxy: str | None = None, timeout: int = 20) -> tuple[bool, i
         elif "connection refused" in low or "connection reset" in low:
             message = "连接被拒绝或重置，检查网络或代理设置"
         return False, int((time.time() - started) * 1000), message[:200]
+
+def probe_speed(url: str, max_bytes: int = 524288, timeout: int = 12,
+                proxy: str | None = None) -> tuple[bool, int, float]:
+    """抓一小段（默认 512KB）来测速，不落盘。返回 (成功, 字节数, 秒数)。"""
+    cmd = [
+        _CURL, "-sS", "-L", "--fail",
+        "--connect-timeout", "8",
+        "--max-time", str(timeout),
+        "-o", "NUL",
+        "-w", "%{size_download} %{time_total}",
+        "-H", f"Range: bytes=0-{max_bytes - 1}",
+        *_proxy_args(proxy),
+        url,
+    ]
+    started = time.time()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW)
+    except Exception:
+        return False, 0, 0.0
+    if proc.returncode != 0:
+        return False, 0, max(time.time() - started, 0.001)
+    out = proc.stdout.decode("utf-8", "replace").strip().split()
+    try:
+        size = int(float(out[0]))
+        secs = max(float(out[1]), 0.001)
+    except (IndexError, ValueError):
+        return False, 0, max(time.time() - started, 0.001)
+    if size < 1024:
+        return False, size, secs
+    return True, size, secs

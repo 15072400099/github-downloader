@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import transport
 
@@ -28,16 +29,38 @@ _lock = threading.RLock()
 _cache: dict[tuple, tuple[float, object]] = {}
 _CACHE_TTL = 90.0
 
-settings: dict = {"token": "", "mirror": DEFAULT_MIRROR, "proxy": ""}
+DEFAULT_MIRRORS = [
+    "https://gh-proxy.com",
+    "https://ghfast.top",
+    "https://gh-proxy.net",
+]
+
+settings: dict = {
+    "token": "",
+    "mirror": DEFAULT_MIRROR,      # 固定镜像（mirror_mode=fixed 时用）
+    "mirrors": list(DEFAULT_MIRRORS),  # 候选镜像池
+    "mirror_mode": "auto",         # auto=自动选最快的；fixed=用上面那个
+    "proxy": "off",                # off=直连；auto=跟随系统代理；也可填地址
+}
 _rate: dict = {"remaining": None, "limit": None, "reset": None}
+# 镜像测速结果缓存：{mirror: {"speed": B/s, "ms": int, "ok": bool, "at": 时间}}
+_mirror_scores: dict = {}
+_active_mirror: str = ""
 
 
 def configure(cfg: dict) -> None:
     with _lock:
         settings["token"] = (cfg.get("token") or "").strip()
         settings["mirror"] = (cfg.get("mirror") or "").strip().rstrip("/")
-        settings["proxy"] = (cfg.get("proxy") or "").strip()
+        settings["mirror_mode"] = (cfg.get("mirror_mode") or "auto").strip()
+        mirrors = cfg.get("mirrors")
+        if isinstance(mirrors, list):
+            settings["mirrors"] = [str(m).strip().rstrip("/") for m in mirrors if str(m).strip()]
+        settings["proxy"] = (cfg.get("proxy") or "off").strip()
         _cache.clear()
+        _mirror_scores.clear()
+        global _active_mirror
+        _active_mirror = ""
 
 
 def token() -> str:
@@ -48,8 +71,39 @@ def mirror() -> str:
     return settings.get("mirror") or ""
 
 
+def system_proxy() -> str:
+    """读 Windows 的「系统代理」设置，拿不到返回空串。"""
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        )
+        enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+        server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        if enabled and server:
+            first = str(server).split(";")[0]
+            if "=" in first:
+                first = first.split("=", 1)[1]
+            first = first.strip()
+            if first and "://" not in first:
+                first = "http://" + first
+            return first
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def proxy() -> str:
-    return settings.get("proxy") or ""
+    """代理设置：off/空 = 直连；auto = 跟随系统代理；其它按填写的地址。"""
+    raw = (settings.get("proxy") or "off").strip()
+    low = raw.lower()
+    if low in ("", "off", "none", "0", "false"):
+        return ""
+    if low == "auto":
+        return system_proxy()
+    return raw
 
 
 def rate_limit() -> dict:
@@ -257,13 +311,6 @@ def archive_url(repo_id: str, revision: str = "") -> str:
     return f"https://codeload.github.com/{repo_id}/zip/{ref}"
 
 
-def download_url(asset_url: str) -> str:
-    """把原始下载地址套上加速镜像前缀（如果配置了）。"""
-    base = mirror()
-    if not base or not asset_url:
-        return asset_url
-    return f"{base}/{asset_url}"
-
 
 # ---------------------------------------------------------------------------
 # 工具
@@ -289,3 +336,96 @@ def looks_like_repo_id(text: str) -> bool:
     if "github.com" in text.lower():
         return True
     return "/" in text and len(text.split("/")) == 2 and " " not in text
+
+# ---------------------------------------------------------------------------
+# 镜像池：测速、选最快的、拼下载地址
+# ---------------------------------------------------------------------------
+PROBE_URL = ("https://github.com/junegunn/fzf/releases/download/"
+             "v0.74.5/fzf-0.74.5-windows_amd64.zip")
+_SCORE_TTL = 600  # 测速结果缓存 10 分钟
+
+
+def mirrors() -> list:
+    pool = settings.get("mirrors") or list(DEFAULT_MIRRORS)
+    pool = [m for m in pool if m]
+    return pool or [""]
+
+
+def probe_all(force: bool = False) -> dict:
+    """给每个镜像测速（并发），返回 {mirror: {ok, speed, ms}}。"""
+    pool = mirrors()
+    now = time.time()
+    if not force and _mirror_scores and all(
+            now - v.get("at", 0) < _SCORE_TTL for v in _mirror_scores.values()
+    ) and set(_mirror_scores) >= set(pool):
+        return _mirror_scores
+
+    def one(mirror: str):
+        target = f"{mirror}/{PROBE_URL}" if mirror else PROBE_URL
+        ok, size, secs = transport.probe_speed(target, proxy=proxy())
+        speed = int(size / secs) if ok and secs else 0
+        return mirror, {"ok": ok, "speed": speed, "ms": int(secs * 1000), "at": time.time()}
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(pool)))) as pool_exec:
+        for mirror, score in pool_exec.map(one, pool):
+            results[mirror] = score
+    _mirror_scores.clear()
+    _mirror_scores.update(results)
+    return results
+
+
+def current_mirror() -> str:
+    """上次测速选中的镜像（不触发测速，供界面展示用）。"""
+    return _active_mirror
+
+
+def warm_mirrors() -> None:
+    """后台预热：测速一次，选出当前镜像。"""
+    try:
+        best_mirror()
+    except Exception:
+        pass
+
+
+def best_mirror() -> str:
+    """按当前配置挑一个镜像：fixed 用指定的，auto 用最快的。"""
+    global _active_mirror
+    mode = (settings.get("mirror_mode") or "auto").lower()
+    if mode == "fixed":
+        _active_mirror = (settings.get("mirror") or "").rstrip("/")
+        return _active_mirror
+    scores = probe_all()
+    usable = [(v["speed"], m) for m, v in scores.items() if v.get("ok")]
+    if usable:
+        _active_mirror = max(usable)[1]
+        return _active_mirror
+    # 一个都测不通：退回第一个非空镜像，让下载器自己去报错
+    for m in mirrors():
+        if m:
+            _active_mirror = m
+            return m
+    _active_mirror = ""
+    return ""
+
+
+def download_url(raw_url: str) -> str:
+    """把 GitHub 原始地址套上当前选中的镜像（幂等：已带镜像前缀的会先剥掉）。"""
+    raw = (raw_url or "").strip()
+    if not raw:
+        return raw
+    for prefix in list(_mirror_scores) + mirrors():
+        if prefix and raw.startswith(prefix + "/"):
+            raw = raw[len(prefix) + 1:]
+            break
+    base = best_mirror()
+    return f"{base}/{raw}" if base else raw
+
+
+def mirror_report() -> dict:
+    scores = probe_all()
+    return {
+        "active": best_mirror(),
+        "mode": settings.get("mirror_mode") or "auto",
+        "scores": [{"mirror": m or "（直连）", **v} for m, v in scores.items()],
+    }

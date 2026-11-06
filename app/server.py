@@ -47,7 +47,9 @@ DEFAULT_SETTINGS = {
     "port": 8768,
     "token": "",
     "mirror": gh_client.DEFAULT_MIRROR,
-    "proxy": "",
+    "mirrors": list(gh_client.DEFAULT_MIRRORS),
+    "mirror_mode": "auto",
+    "proxy": "off",
 }
 
 CONTENT_TYPES = {
@@ -103,7 +105,29 @@ SETTINGS = load_settings()
 gh_client.configure(SETTINGS)
 MANAGER = DownloadManager(DATA_DIR, SETTINGS)
 # 启动时查一次额度，界面上能直接看到还剩多少（消耗 1 次请求）
+def cleanup_orphan_curl() -> None:
+    """上次异常退出可能留下还在下载的 curl，会偷带宽，启动时清掉。"""
+    try:
+        import subprocess as _sp
+
+        root = str(Path(SETTINGS["download_dir"]))
+        out = _sp.run(["wmic", "process", "where", "name='curl.exe'", "get", "ProcessId,CommandLine", "/format:csv"],
+                      capture_output=True, text=True, timeout=20,
+                      creationflags=0x08000000).stdout
+        for line in (out or "").splitlines():
+            if root in line:
+                parts = line.rsplit(",", 2)
+                if len(parts) >= 2 and parts[-1].strip().isdigit():
+                    _sp.run(["taskkill", "/PID", parts[-1].strip(), "/F"],
+                            capture_output=True, creationflags=0x08000000)
+                    log(f"清理残留 curl PID {parts[-1].strip()}")
+    except Exception:
+        pass
+
+
+cleanup_orphan_curl()
 threading.Thread(target=lambda: gh_client.refresh_rate_limit(), daemon=True).start()
+threading.Thread(target=gh_client.warm_mirrors, daemon=True).start()
 
 
 def versions() -> dict:
@@ -115,8 +139,9 @@ def versions() -> dict:
         out["curl_version"] = (proc.stdout or "").splitlines()[0].strip()
     except Exception:
         out["curl_version"] = "未知"
-    out["mirror"] = SETTINGS.get("mirror") or "直连"
-    out["proxy"] = SETTINGS.get("proxy") or "未设置"
+    out["mirror"] = gh_client.current_mirror() or "未测速"
+    out["mirror_mode"] = SETTINGS.get("mirror_mode") or "auto"
+    out["proxy"] = gh_client.proxy() or ("直连" if (SETTINGS.get("proxy") or "") != "auto" else "直连（系统未启用代理）")
     out["token"] = "已填写" if SETTINGS.get("token") else "未填写"
     out["rate"] = gh_client.rate_limit()
     return out
@@ -225,6 +250,15 @@ class Handler(BaseHTTPRequestHandler):
                 safe["token_set"] = bool(SETTINGS.get("token"))
                 safe["token"] = ""  # 不把 token 回传给浏览器
                 self._json({"ok": True, "settings": safe, "defaults": DEFAULT_SETTINGS})
+            elif route == "/api/mirrors":
+                report = gh_client.mirror_report()
+                report["ok"] = True
+                self._json(report)
+            elif route == "/api/mirrors/test":
+                gh_client.probe_all(force=True)
+                report = gh_client.mirror_report()
+                report["ok"] = True
+                self._json(report)
             elif route == "/api/rate":
                 self._json({"ok": True, "rate": gh_client.refresh_rate_limit()})
             else:
@@ -282,6 +316,21 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": False, "error": "加速镜像要以 http:// 或 https:// 开头"}, 400)
                         return
                     SETTINGS["mirror"] = value
+                if "mirrors" in patch and isinstance(patch["mirrors"], list):
+                    cleaned = []
+                    for item in patch["mirrors"]:
+                        item = str(item).strip().rstrip("/")
+                        if not item:
+                            continue
+                        if not item.startswith(("http://", "https://")):
+                            self._json({"ok": False, "error": f"镜像地址不合法：{item}"}, 400)
+                            return
+                        if item not in cleaned:
+                            cleaned.append(item)
+                    SETTINGS["mirrors"] = cleaned
+                if "mirror_mode" in patch:
+                    mode = str(patch["mirror_mode"]).strip().lower()
+                    SETTINGS["mirror_mode"] = mode if mode in ("auto", "fixed") else "auto"
                 if "proxy" in patch:
                     SETTINGS["proxy"] = str(patch["proxy"]).strip()
                 if "token" in patch:

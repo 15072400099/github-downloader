@@ -296,6 +296,12 @@ class DownloadManager:
                 task["files_done"] = sum(1 for f in files if f.get("state") == "done")
             self._mark_dirty()
 
+            # 有些资源（GitHub 源码压缩包）在清单里没有大小，
+            # 下载前 HEAD 一次拿 Content-Length，进度条和剩余时间才有意义
+            unknown = [item for item in pending if not int(item.get("size") or 0)]
+            if unknown:
+                self._fill_sizes(unknown, task)
+
             failures: list[tuple[str, str]] = []
             workers = max(1, int(self.settings.get("files_per_model", 3)))
 
@@ -356,6 +362,26 @@ class DownloadManager:
         finally:
             self._events.pop(task["id"], None)
 
+    def _fill_sizes(self, items: list[dict], task: dict) -> None:
+        """给没有大小的文件补上大小（并发 HEAD，最多 4 个，失败就跳过）。"""
+        def probe(item):
+            try:
+                size = transport.head_length(item.get("url") or "",
+                                             proxy=gh_client.proxy(), timeout=20)
+                return item, size
+            except BaseException:
+                return item, 0
+
+        gained = 0
+        with ThreadPoolExecutor(max_workers=min(4, len(items))) as pool:
+            for item, size in pool.map(probe, items):
+                if size and size > 0:
+                    item["size"] = size
+                    gained += size
+        if gained:
+            with self._lock:
+                task["bytes_total"] = int(task.get("bytes_total") or 0) + gained
+            self._mark_dirty()
     def _download_one(self, task: dict, event: threading.Event, out_dir: Path, item: dict) -> None:
         path = item["path"]
         expect = int(item.get("size") or 0)
@@ -364,9 +390,11 @@ class DownloadManager:
         with self._lock:
             item["state"] = "downloading"
 
-        url = item.get("url") or ""
-        if not url:
+        raw_url = item.get("url") or ""
+        if not raw_url:
             raise RuntimeError("这个文件没有下载地址（请在界面里重新选一次）")
+        # 每次下载都按当前测速结果拼镜像地址，换镜像后连排队/重试的任务也会跟着换
+        url = gh_client.download_url(raw_url)
 
         def on_progress(delta: int) -> None:
             with self._lock:

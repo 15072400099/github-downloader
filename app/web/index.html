@@ -117,14 +117,19 @@
         </div>
 
         <div class="field">
-          <label>加速镜像（下载用）</label>
-          <div class="row-gap">
-            <input id="set-mirror" type="text" spellcheck="false" placeholder="https://gh-proxy.com">
-            <button class="btn ghost" id="set-test">测试接口</button>
+          <label>加速镜像</label>
+          <div class="row-gap" style="margin-bottom:8px">
+            <select id="set-mirror-mode">
+              <option value="auto">自动：测速后选最快的</option>
+              <option value="fixed">固定：按列表顺序用第一个能通的</option>
+            </select>
+            <button class="btn ghost small" id="set-mirror-test">测速</button>
+            <button class="btn ghost small" id="set-test">测试接口</button>
           </div>
-          <p class="muted small">
-            GitHub 的下载地址在国内常被阻断，默认套一层加速镜像。留空表示直连（多半连不上）。
-          </p>
+          <textarea id="set-mirrors" rows="4" spellcheck="false"
+            style="width:100%;padding:10px 12px;border-radius:11px;border:1.5px solid var(--line);background:#fbfcff;font:inherit;font-size:12.5px;font-family:ui-monospace,Consolas,monospace"></textarea>
+          <p class="muted small">每行一个镜像地址，程序会自动挑最快的。留空表示直连（国内基本不通）。</p>
+          <div id="mirror-scores" class="muted small" style="margin-top:6px"></div>
         </div>
 
         <div class="field">
@@ -140,9 +145,12 @@
         </div>
 
         <div class="field">
-          <label>代理（可选）</label>
-          <input id="set-proxy" type="text" spellcheck="false" placeholder="例如 127.0.0.1:7897">
-          <p class="muted small">给接口请求用。下载走镜像，一般不需要代理。</p>
+          <label>代理</label>
+          <input id="set-proxy" type="text" spellcheck="false" placeholder="auto = 跟随系统代理；也可填 127.0.0.1:7900">
+          <p class="muted small">
+            <b>auto</b> 表示跟随 Windows 的系统代理；留空表示强制直连；也可以直接填地址。
+            实测：直连镜像约 160 KB/s，走代理能到 5 MB/s 以上，<b>建议保持 auto</b>。
+          </p>
         </div>
 
         <div class="field">

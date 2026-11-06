@@ -153,7 +153,7 @@ async function doSearch(reset = true) {
   hint.classList.add("hidden");
   app.search.items = app.search.items.concat(data.items || []);
   app.search.hasMore = !!data.has_more;
-  setResultHead(app.search.q ? `搜索「${app.search.q}」` : "热门仓库", `${app.search.items.length} 个结果`);
+  setResultHead(app.search.q ? `搜索「${app.search.q}」` : "热门仓库", `${app.search.items.length} 个结果 · ${sortLabel(app.search.sort)}`);
   renderSearch();
 }
 
@@ -168,6 +168,14 @@ async function loadFeatured() {
   setResultHead("热门仓库", "按星标数排序");
   renderSearch();
 }
+
+const SORT_LABELS = {
+  "stars": "按星标",
+  "forks": "按复刻数",
+  "updated": "按更新时间",
+};
+
+function sortLabel(key) { return SORT_LABELS[key] || ""; }
 
 function setResultHead(title, sub) {
   const head = $("#result-head");

@@ -120,6 +120,24 @@ GitHub 的源码包走 `codeload.github.com`，**不支持 Range 请求**，所�
 | [huggingface-downloader](https://github.com/15072400099/huggingface-downloader) | 下载 HuggingFace 模型（走 hf-mirror 镜像） |  |
 | [github-downloader](https://github.com/15072400099/github-downloader) | 下载 GitHub 的 Release 资源 | **本项目** |
 
+## 项目定位
+
+这不是一个 GitHub 客户端，只是一台**只读的下载工具**。发新功能前，先用三条尺度量一下：
+
+1. **只读，只管下**：能搜、能看 Release、能下就够了。浏览、收藏、关注、star、登录，一律不做。
+2. **不拖慢主路径**：从「搜索」到「开始下载」之间，不能多出等待或步骤。
+3. **零依赖**：不为锦上添花的功能引入第三方库。
+
+### 关于 token：它不是登录
+
+本程序**不做登录**：没有账号密码，没有 OAuth 会话，也不会替你点赞或提交任何东西。
+
+设置里的 token 只有**一个用途**：把 GitHub 的接口额度从 60 次/小时提到 5000 次/小时。
+它只在本机 `data/settings.json` 里，只随请求发给 `api.github.com`，不会回传给浏览器，也不会上传到别处。
+不填 token 程序照样能跑，只是浏览几个仓库后要等额度恢复。
+
+**代理**同理，是可选开关：镜像是免费的，代理是花钱买速度，默认关闭。
+
 ## 反馈与建议
 
 这个项目由作者个人维护，**不接收代码修改**（Pull Request 不会被合并）。

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用说明 / 常见问题
+    url: https://github.com/15072400099/github-downloader#readme
+    about: 先看 README 的「故障排查」和「三个必须知道的现实」
+  - name: 额度说明
+    url: https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api
+    about: 未登录 60 次/小时，填 token 5000 次/小时（官方文档）

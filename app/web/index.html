@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub 下载器</title>
+<link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">GH</div>
+      <div class="brand-text">
+        <h1>GitHub 下载器</h1>
+        <p>搜仓库 · 下 Release · 断点续传</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="pill" id="pill-running">下载中 0</div>
+      <div class="pill pill-quiet" id="pill-quota">额度 —</div>
+      <div class="pill pill-quiet" id="pill-saved">保存到 downloads</div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="search">找仓库</button>
+    <button class="tab" data-view="tasks">下载任务 <span class="badge" id="badge-tasks">0</span></button>
+    <button class="tab" data-view="library">已下载 <span class="badge" id="badge-library">0</span></button>
+    <button class="tab" data-view="settings">设置</button>
+  </nav>
+
+  <main>
+    <!-- ================= 找仓库 ================= -->
+    <section class="view active" id="view-search">
+      <div class="hero">
+        <h2>想下哪个仓库？</h2>
+        <p class="muted">输关键词搜仓库，或直接粘贴 GitHub 仓库链接 / 输入 <code>作者/仓库</code>。</p>
+        <div class="searchbar">
+          <input id="search-input" type="text" placeholder="例如：ollama，或 https://github.com/cli/cli" autocomplete="off" spellcheck="false">
+          <select id="search-sort" title="排序方式">
+            <option value="stars">星标最多</option>
+            <option value="forks">复刻最多</option>
+            <option value="updated">最近更新</option>
+          </select>
+          <button class="btn primary" id="search-btn">搜索</button>
+        </div>
+        <div class="quick" id="quick-tags">
+          <span class="muted small">热门：</span>
+          <button class="chip" data-q="llm">LLM</button>
+          <button class="chip" data-q="comfyui">ComfyUI</button>
+          <button class="chip" data-q="llama.cpp">llama.cpp</button>
+          <button class="chip" data-q="stable-diffusion">绘图</button>
+          <button class="chip" data-q="whisper">语音</button>
+          <button class="chip" data-q="electron">桌面应用</button>
+        </div>
+      </div>
+
+      <div id="search-hint" class="hint hidden"></div>
+      <div class="section-head hidden" id="result-head">
+        <h2 id="result-title"></h2>
+        <span class="muted small" id="result-sub"></span>
+      </div>
+      <div id="search-results" class="grid"></div>
+      <div class="center">
+        <button class="btn ghost hidden" id="load-more">加载更多</button>
+      </div>
+    </section>
+
+    <!-- ================= 下载任务 ================= -->
+    <section class="view" id="view-tasks">
+      <div class="section-head">
+        <h2>下载任务</h2>
+        <div class="row-gap">
+          <button class="btn ghost small" id="pause-all">全部暂停</button>
+          <button class="btn ghost small" id="resume-all">全部继续</button>
+        </div>
+      </div>
+      <div id="tasks-empty" class="empty">
+        <div class="empty-icon">⤓</div>
+        <h3>还没有下载任务</h3>
+        <p class="muted">去「找仓库」里搜一个，打开它的 Release 选资源下载。</p>
+        <button class="btn primary" onclick="switchView('search')">去找仓库</button>
+      </div>
+      <div id="task-list" class="stack"></div>
+    </section>
+
+    <!-- ================= 已下载 ================= -->
+    <section class="view" id="view-library">
+      <div class="section-head">
+        <h2>已下载 <span class="muted small" id="library-total"></span></h2>
+        <div class="row-gap">
+          <button class="btn ghost small" id="library-refresh">刷新</button>
+          <button class="btn ghost small" id="library-open">打开下载目录</button>
+        </div>
+      </div>
+      <div id="library-empty" class="empty">
+        <div class="empty-icon">◱</div>
+        <h3>这里还是空的</h3>
+        <p class="muted">下载完成的文件会出现在这里，方便你复制路径。</p>
+      </div>
+      <div id="library-list" class="stack"></div>
+    </section>
+
+    <!-- ================= 设置 ================= -->
+    <section class="view" id="view-settings">
+      <div class="section-head"><h2>设置</h2></div>
+
+      <div class="card settings-card">
+        <div class="field">
+          <label>保存位置</label>
+          <div class="row-gap">
+            <input id="set-dir" type="text" spellcheck="false">
+            <button class="btn ghost" id="set-browse">浏览…</button>
+          </div>
+          <p class="muted small">每个仓库会存在这个目录下的「作者/仓库名」里。</p>
+        </div>
+
+        <div class="field">
+          <label>加速镜像（下载用）</label>
+          <div class="row-gap">
+            <input id="set-mirror" type="text" spellcheck="false" placeholder="https://gh-proxy.com">
+            <button class="btn ghost" id="set-test">测试接口</button>
+          </div>
+          <p class="muted small">
+            GitHub 的下载地址在国内常被阻断，默认套一层加速镜像。留空表示直连（多半连不上）。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>GitHub token（可选，强烈建议）</label>
+          <div class="row-gap">
+            <input id="set-token" type="password" spellcheck="false" placeholder="留空表示不修改；填 __clear__ 表示清除">
+            <button class="btn ghost" id="set-token-clear">清除</button>
+          </div>
+          <p class="muted small" id="set-token-tip">
+            不填 token 时接口只有 <b>60 次/小时</b>，浏览几个仓库就用完；填了是 <b>5000 次/小时</b>。
+            去 GitHub → Settings → Developer settings → Personal access tokens 创建一个，<b>不需要勾任何权限</b>。
+          </p>
+        </div>
+
+        <div class="field">
+          <label>代理（可选）</label>
+          <input id="set-proxy" type="text" spellcheck="false" placeholder="例如 127.0.0.1:7897">
+          <p class="muted small">给接口请求用。下载走镜像，一般不需要代理。</p>
+        </div>
+
+        <div class="field">
+          <label>同时下载几个任务 <span class="muted small" id="set-parallel-val">2</span></label>
+          <input id="set-parallel" type="range" min="1" max="6" step="1">
+        </div>
+
+        <div class="field">
+          <label>每个任务同时下几个文件 <span class="muted small" id="set-files-val">3</span></label>
+          <input id="set-files" type="range" min="1" max="12" step="1">
+        </div>
+
+        <div class="row-gap">
+          <button class="btn primary" id="set-save">保存设置</button>
+          <span class="muted small" id="set-tip"></span>
+        </div>
+      </div>
+
+      <div class="card settings-card">
+        <h3>运行状态</h3>
+        <ul class="kv" id="status-list">
+          <li><span>程序版本</span><b>1.0</b></li>
+          <li><span>网络组件</span><b id="net-component">—</b></li>
+          <li><span>加速镜像</span><b id="status-mirror">—</b></li>
+          <li><span>token</span><b id="status-token">—</b></li>
+          <li><span>接口额度</span><b id="status-quota">—</b></li>
+          <li><span>本机界面地址</span><b id="status-url">—</b></li>
+        </ul>
+        <div class="row-gap">
+          <button class="btn ghost" id="btn-log">打开日志</button>
+          <button class="btn danger ghost" id="btn-quit">退出程序</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= 下载弹窗 ================= -->
+  <div class="modal hidden" id="modal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h3 id="modal-title">选择要下载的文件</h3>
+          <p class="muted small" id="modal-sub"></p>
+        </div>
+        <button class="icon-btn" id="modal-close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="field">
+          <label>Release 版本</label>
+          <div class="row-gap">
+            <select id="modal-release"></select>
+            <button class="btn ghost small" id="modal-reload">重新读取</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="row-between">
+            <label>要下载哪些文件 <span class="muted small" id="modal-file-count"></span></label>
+            <div class="row-gap">
+              <button class="chip small" data-pick="all">全选</button>
+              <button class="chip small" data-pick="none">全不选</button>
+              <button class="chip small" data-pick="win">只要 Windows</button>
+              <button class="chip small" data-pick="src">加源码包</button>
+            </div>
+          </div>
+          <div class="file-list" id="modal-files">
+            <div class="muted small pad">正在读取 Release…</div>
+          </div>
+        </div>
+
+        <div class="summary" id="modal-summary"></div>
+      </div>
+
+      <div class="modal-foot">
+        <button class="btn ghost" id="modal-cancel">取消</button>
+        <button class="btn primary" id="modal-start">开始下载</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

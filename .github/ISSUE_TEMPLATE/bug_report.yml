@@ -1,0 +1,71 @@
+name: 报告问题
+description: 搜索失败、下载卡住、额度用完、文件缺失等
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。填得越具体，定位越快。
+
+        如果是**额度问题**，先看设置页显示的剩余次数；
+        如果是**文件不齐**，先跑一次 `检查并补齐现有文件.bat`。
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: 你是用哪种方式运行的？
+      options:
+        - 下载的 exe（GitHubDownloader.exe）
+        - 源码方式（批处理启动）
+        - 直接从 Python 运行
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么？
+      description: 期望的结果 vs 实际的结果
+      placeholder: 搜索 ollama 后一直转圈，最后提示超时……
+    validations:
+      required: true
+
+  - type: textarea
+    id: how-to-reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 默认镜像 gh-proxy.com
+        2. 搜索 xxx
+        3. 打开 Release 下载 windows zip
+        4. 约 30 秒后卡住
+
+  - type: input
+    id: mirror
+    attributes:
+      label: 用的加速镜像 / 代理
+      placeholder: https://gh-proxy.com（或自填的地址）
+
+  - type: dropdown
+    id: token
+    attributes:
+      label: 有没有填 token
+      options:
+        - 填了
+        - 没填
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志或报错原文
+      description: 界面上的红色提示，或 data\logs\server.log 的最后几十行
+      render: text
+
+  - type: input
+    id: env
+    attributes:
+      label: 系统与版本
+      placeholder: Windows 11 23H2 / v1.0.0
